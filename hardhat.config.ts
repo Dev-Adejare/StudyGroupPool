@@ -1,7 +1,7 @@
 import { HardhatUserConfig, vars } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
 
-//   "StudyGroupPoolModule#StudyGroupPool": "0x5530F73A68e1f02BC85707d83c877273E89c7546"
+//   {"StudyGroupPoolModule#StudyGroupPool": "0x5530F73A68e1f02BC85707d83c877273E89c7546"}
 
 
 const ALCHEMY_API_KEY = vars.get("ALCHEMY_API_KEY");
