@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
-/**
- * @title StudyGroupPool
- * @dev A contract for managing a study group's pooled funds and voting on fund releases
- */
 contract StudyGroupPool {
     struct Member {
         bool isMember;
@@ -17,6 +13,8 @@ contract StudyGroupPool {
         uint256 votesFor;
         uint256 votesAgainst;
         bool executed;
+        uint256 creationTime;
+        address payable beneficiary;
         mapping(address => bool) hasVoted;
     }
 
@@ -34,9 +32,10 @@ contract StudyGroupPool {
     event MemberAdded(address member);
     event MemberRemoved(address member);
     event FundsContributed(address member, uint256 amount);
-    event ProposalCreated(uint256 proposalId, string description, uint256 amount);
+    event FundsWithdrawn(address member, uint256 amount);
+    event ProposalCreated(uint256 proposalId, string description, uint256 amount, address beneficiary);
     event Voted(uint256 proposalId, address voter, bool inFavor);
-    event ProposalExecuted(uint256 proposalId, bool passed);
+    event ProposalExecuted(uint256 proposalId, bool passed, uint256 amount, address beneficiary);
 
     modifier onlyAdmin() {
         require(msg.sender == admin, "Only admin can perform this action");
@@ -52,10 +51,8 @@ contract StudyGroupPool {
         admin = msg.sender;
     }
 
-    /**
-     * @dev Add a new member to the study group
-     * @param _member The address of the new member
-     */
+    // ######## Add a new member to the study group #########/
+
     function addMember(address _member) external onlyAdmin {
         require(!members[_member].isMember, "Already a member");
         members[_member].isMember = true;
@@ -64,10 +61,8 @@ contract StudyGroupPool {
         emit MemberAdded(_member);
     }
 
-    /**
-     * @dev Remove a member from the study group
-     * @param _member The address of the member to remove
-     */
+    // /########## Remove a member from the study group ########/
+
     function removeMember(address _member) external onlyAdmin {
         require(members[_member].isMember, "Not a member");
         members[_member].isMember = false;
@@ -82,38 +77,46 @@ contract StudyGroupPool {
         emit MemberRemoved(_member);
     }
 
-    /**
-     * @dev Contribute funds to the pool
-     */
+    
+    //####### Contribute funds to the pool ##########
+
     function contributeFunds() external payable onlyMember {
         members[msg.sender].contribution += msg.value;
         totalFunds += msg.value;
         emit FundsContributed(msg.sender, msg.value);
     }
 
-    /**
-     * @dev Create a new proposal for fund release
-     * @param _description Description of the proposal
-     * @param _amount Amount of funds requested
-     */
-    function createProposal(string memory _description, uint256 _amount) external onlyMember {
+    //  ##########   Withdraw contributed funds #######
+    
+    function withdrawFunds(uint256 _amount) external onlyMember {
+        require(members[msg.sender].contribution >= _amount, "Insufficient contribution");
+        members[msg.sender].contribution -= _amount;
+        totalFunds -= _amount;
+        (bool success, ) = msg.sender.call{value: _amount}("");
+        require(success, "Transfer failed");
+        emit FundsWithdrawn(msg.sender, _amount);
+    }
+
+    /**##### Create a new proposal for fund release #######     */
+
+    function createProposal(string memory _description, uint256 _amount, address payable _beneficiary) external onlyMember {
         require(_amount <= totalFunds, "Requested amount exceeds available funds");
         uint256 proposalId = proposalCount++;
         Proposal storage newProposal = proposals[proposalId];
         newProposal.description = _description;
         newProposal.amount = _amount;
-        emit ProposalCreated(proposalId, _description, _amount);
+        newProposal.creationTime = block.timestamp;
+        newProposal.beneficiary = _beneficiary;
+        emit ProposalCreated(proposalId, _description, _amount, _beneficiary);
     }
 
-    /**
-     * @dev Vote on a proposal
-     * @param _proposalId The ID of the proposal
-     * @param _inFavor True if voting in favor, false if voting against
-     */
+    /*####### Vote on a proposal  ##########*/
+
     function vote(uint256 _proposalId, bool _inFavor) external onlyMember {
         Proposal storage proposal = proposals[_proposalId];
         require(!proposal.hasVoted[msg.sender], "Already voted on this proposal");
         require(!proposal.executed, "Proposal has already been executed");
+        require(block.timestamp < proposal.creationTime + VOTING_PERIOD, "Voting period has ended");
 
         proposal.hasVoted[msg.sender] = true;
         if (_inFavor) {
@@ -125,14 +128,12 @@ contract StudyGroupPool {
         emit Voted(_proposalId, msg.sender, _inFavor);
     }
 
-    /**
-     * @dev Execute a proposal after the voting period
-     * @param _proposalId The ID of the proposal to execute
-     */
+    /**####### Execute a proposal after the voting period ########*/
+
     function executeProposal(uint256 _proposalId) external onlyMember {
         Proposal storage proposal = proposals[_proposalId];
         require(!proposal.executed, "Proposal has already been executed");
-        require(block.timestamp >= VOTING_PERIOD, "Voting period has not ended");
+        require(block.timestamp >= proposal.creationTime + VOTING_PERIOD, "Voting period has not ended");
 
         uint256 totalVotes = proposal.votesFor + proposal.votesAgainst;
         uint256 quorum = (totalMembers * QUORUM_PERCENTAGE) / 100;
@@ -143,28 +144,24 @@ contract StudyGroupPool {
 
         if (proposal.votesFor > proposal.votesAgainst && totalFunds >= proposal.amount) {
             totalFunds -= proposal.amount;
-            payable(msg.sender).transfer(proposal.amount);
-            emit ProposalExecuted(_proposalId, true);
+            (bool success, ) = proposal.beneficiary.call{value: proposal.amount}("");
+            require(success, "Transfer failed");
+            emit ProposalExecuted(_proposalId, true, proposal.amount, proposal.beneficiary);
         } else {
-            emit ProposalExecuted(_proposalId, false);
+            emit ProposalExecuted(_proposalId, false, 0, proposal.beneficiary);
         }
     }
 
-    /**
-     * @dev Get the details of a proposal
-     * @param _proposalId The ID of the proposal
-     * @return description The description of the proposal
-     * @return amount The amount requested in the proposal
-     * @return votesFor The number of votes in favor
-     * @return votesAgainst The number of votes against
-     * @return executed Whether the proposal has been executed
-     */
+    /*##### Get the details of a proposal #####*/
+
     function getProposal(uint256 _proposalId) external view returns (
         string memory description,
         uint256 amount,
         uint256 votesFor,
         uint256 votesAgainst,
-        bool executed
+        bool executed,
+        uint256 creationTime,
+        address beneficiary
     ) {
         Proposal storage proposal = proposals[_proposalId];
         return (
@@ -172,23 +169,27 @@ contract StudyGroupPool {
             proposal.amount,
             proposal.votesFor,
             proposal.votesAgainst,
-            proposal.executed
+            proposal.executed,
+            proposal.creationTime,
+            proposal.beneficiary
         );
     }
 
-    /**
-     * @dev Get the total number of members
-     * @return The total number of members
-     */
+    /*######  Get the total number of members #####    */
+
     function getMemberCount() external view returns (uint256) {
         return totalMembers;
     }
 
-    /**
-     * @dev Get the total funds in the pool
-     * @return The total funds in wei
-     */
+    /*######### Get the total funds in the pool #### */
+
     function getTotalFunds() external view returns (uint256) {
         return totalFunds;
+    }
+
+    /*####### Get a member's contribution #######*/
+
+    function getMemberContribution(address _member) external view returns (uint256) {
+        return members[_member].contribution;
     }
 }
